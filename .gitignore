@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+build/
+dist/
+*.egg-info/
+.claude/
+.kimi-code/
+.codex/
+work/
+*.log
+state.json
