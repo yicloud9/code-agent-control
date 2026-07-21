@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Agent Control"
+  short_description: "Dispatch and monitor Claude Code or Kimi Code"
+  default_prompt: "Use $code-agent-control to dispatch a Claude Code or Kimi Code task and report its status."
