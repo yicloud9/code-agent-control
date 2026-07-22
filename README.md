@@ -2,7 +2,7 @@
 
 One Codex Skill for dispatching and monitoring both Claude Code and Kimi Code.
 
-The repository keeps the installable Skill under `.agents/skills/code-agent-control/`. Codex discovers that path when the repository is opened locally. The installed user-global copy is a generated deployment artifact; edit the repository source and run the installer to update it.
+The repository keeps the Codex Skill under `.agents/skills/code-agent-control/`. When Codex opens this repository, it discovers the project-local Skill automatically. The user-global copy is only for using the Skill from unrelated projects.
 
 ## What it supports
 
@@ -11,15 +11,32 @@ The repository keeps the installable Skill under `.agents/skills/code-agent-cont
 - Kimi model alias resolution from `KIMI_CODE_HOME/config.toml`, including mapping `kimi-for-coding` to a registered alias such as `kimi-code/kimi-for-coding`.
 - Local-only job state and logs; no credentials are stored by the controller.
 
-## Install
+## Use from this repository (recommended)
 
-Clone this repository, then run:
+After opening the repository in Codex, invoke the Skill by name and choose the backend in your request:
+
+```text
+Use $code-agent-control and dispatch this task to Claude Code.
+Use $code-agent-control and dispatch this task to Kimi Code.
+```
+
+Codex is the controller; Claude Code and Kimi Code are the execution backends. You do not need to install the Skill for every task.
+
+## Optional global installation
+
+Install it once only when you want to use `$code-agent-control` from projects that do not contain this repository:
+
+```bash
+python3 tools/install_skill.py
+```
+
+If the global copy already exists and you are updating it, replace it explicitly:
 
 ```bash
 python3 tools/install_skill.py --force
 ```
 
-This installs the Skill to `${CODEX_HOME:-~/.codex}/skills/code-agent-control`. Start a new Codex task after installation so the Skill catalog refreshes.
+This installs the Skill to `${CODEX_HOME:-~/.codex}/skills/code-agent-control`. Start a new Codex task after a global installation so the Skill catalog refreshes.
 
 ## Usage
 
