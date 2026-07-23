@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional
 SKILL_NAME = "code-agent-control"
 ACTIVE_STATES = {"queued", "working"}
 TERMINAL_STATES = {"done", "failed", "stopped"}
+ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+CLAUDE_JOB_ID_RE = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{8})(?![0-9A-Fa-f])")
 
 
 def now_iso() -> str:
@@ -128,6 +130,13 @@ def parse_claude_agents(raw: str) -> List[Dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("claude agents --json did not return a JSON array")
     return data
+
+
+def extract_claude_job_id(output: str) -> Optional[str]:
+    """Extract a Claude background job id from colored or mixed CLI output."""
+    clean_output = ANSI_ESCAPE_RE.sub("", output)
+    match = CLAUDE_JOB_ID_RE.search(clean_output)
+    return match.group(1).lower() if match else None
 
 
 def control_home() -> Path:
@@ -245,6 +254,38 @@ def claude_list(cwd: Optional[str], include_all: bool) -> List[Dict[str, Any]]:
     return parse_claude_agents(run(cmd).stdout)
 
 
+def discover_claude_job_id(
+    cwd: str, name: Optional[str], started_after_ms: Optional[int]
+) -> Optional[str]:
+    """Find a newly-created Claude background job when dispatch output has no id."""
+    try:
+        sessions = claude_list(cwd, True)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError):
+        return None
+
+    candidates = []
+    for session in sessions:
+        if session.get("kind") != "background":
+            continue
+        if str(session.get("cwd", "")) != cwd:
+            continue
+        if name and session.get("name") != name:
+            continue
+        started_at = session.get("startedAt")
+        if started_after_ms is not None and isinstance(started_at, (int, float)):
+            if started_at < started_after_ms - 2000:
+                continue
+        job_id = str(session.get("id", ""))
+        if CLAUDE_JOB_ID_RE.fullmatch(job_id):
+            sort_started_at = started_at if isinstance(started_at, (int, float)) else 0
+            candidates.append((sort_started_at, job_id.lower()))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     if args.backend == "claude":
         emit({"backend": "claude", "jobs": claude_list(args.cwd, args.all)})
@@ -332,6 +373,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 def claude_dispatch(args: argparse.Namespace) -> int:
     claude_cli = require_cli("claude")
     cwd = str(Path(args.cwd).expanduser().resolve())
+    dispatch_started_ms = int(time.time() * 1000)
     cmd = [claude_cli, "--bg"]
     settings_file = None
     if args.name:
@@ -372,10 +414,22 @@ def claude_dispatch(args: argparse.Namespace) -> int:
     cmd.append(args.prompt)
     try:
         result = run(cmd, cwd=cwd)
-        output = result.stdout.rstrip()
-        emit(output)
+        dispatch_output = "\n".join(
+            part for part in (result.stdout, result.stderr) if part
+        )
+        emit(ANSI_ESCAPE_RE.sub("", dispatch_output).rstrip())
         if settings_file:
-            wait_for_claude_settings_read(output, args.settings_keepalive_seconds)
+            # Claude normally prints the job id to stdout, but terminal color
+            # settings and CLI warnings can move it to stderr.  Parse both
+            # streams so the temporary settings file is not removed before the
+            # detached worker has initialized.
+            wait_for_claude_settings_read(
+                dispatch_output,
+                args.settings_keepalive_seconds,
+                cwd=cwd,
+                name=args.name,
+                started_after_ms=dispatch_started_ms,
+            )
         return 0
     finally:
         if settings_file:
@@ -385,17 +439,24 @@ def claude_dispatch(args: argparse.Namespace) -> int:
                 pass
 
 
-def wait_for_claude_settings_read(dispatch_output: str, timeout_seconds: float) -> None:
-    job_id = None
-    for token in dispatch_output.replace("·", " ").split():
-        if len(token) == 8 and all(ch in "0123456789abcdef" for ch in token.lower()):
-            job_id = token
-            break
-    if not job_id:
-        time.sleep(min(timeout_seconds, 5))
-        return
-
+def wait_for_claude_settings_read(
+    dispatch_output: str,
+    timeout_seconds: float,
+    cwd: Optional[str] = None,
+    name: Optional[str] = None,
+    started_after_ms: Optional[int] = None,
+) -> None:
+    job_id = extract_claude_job_id(dispatch_output)
     deadline = time.monotonic() + timeout_seconds
+    if not job_id:
+        while cwd and time.monotonic() < deadline:
+            job_id = discover_claude_job_id(cwd, name, started_after_ms)
+            if job_id:
+                break
+            time.sleep(0.25)
+        if not job_id:
+            return
+
     state_path = Path.home() / ".claude" / "jobs" / job_id / "state.json"
     while time.monotonic() < deadline:
         try:
